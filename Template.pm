@@ -52,7 +52,7 @@ our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
 our @EXPORT = qw(
 	
 );
-our $VERSION = '0.74';
+our $VERSION = '0.76';
 
 ## Global package settings
 
@@ -87,8 +87,9 @@ sub patterns
    my $pkg = shift;
 
    return {
-      # $1 is the loop name, $2 is the loop body
-      loop => qr/<cam_loop\s+name\s*=\s*\"?([\w\-]+)\"?>(.*?)<\/cam_loop>/is,
+      # $1 is the loop name
+      loopstart => qr/<cam_loop\s+name\s*=\s*\"?([\w\-]+)\"?>/i,
+      loopend => qr/<\/cam_loop>/i,
 
       # a string that looks like one of the "vars" below for
       # substituting the loop variable.  This will be used in:
@@ -108,6 +109,9 @@ sub patterns
           
       # $1 is the variable name, $2 is the value to set it to
       staticvars => qr/::([\w\-]+)==(.{0,80}?)::/,
+
+      # $1 is the subtemplate filename
+      include => qr/<!\-\-\s*\#include\s+template=\"([^\"]+)\"\s*\-\->/,
    };
 }
 
@@ -336,10 +340,38 @@ sub addLoop
 
 #==============================
 
+=item clearLoop LOOPNAME
+
+Blank the contents of the loop accumlator.  This is really only useful
+for nested loops.  For example:
+
+    foreach my $state (@states) {
+       $template->clearLoop("cities");
+       foreach my $city (@{$state->{cities}}) {
+          $template->addLoop("cities", 
+                             city => $city->{name},
+                             pop => $city->{population});
+       }
+       $template->addLoop("state", state => $state->{name});
+    }
+
+=cut
+
+#==============================
+sub clearLoop
+{
+   my $self = shift;
+   my $loopname = shift;
+
+   $self->{params}->{$loopname} = "";
+   return $self;
+}
+#==============================
+
 =item setLoop LOOPNAME, HASHREF | KEY => VALUE, ...
 
 Exactly like addLoop above, except it clears the loop first.  This is
-useful for nested loops.
+useful for the first element of a nested loop.
 
 =cut
 
@@ -349,7 +381,7 @@ sub setLoop
    my $self = shift;
    my $loopname = shift;
 
-   $self->{params}->{$loopname} = "";
+   $self->clearLoop($loopname);
    return $self->addLoop($loopname, @_);
 }
 #==============================
@@ -447,12 +479,24 @@ sub _preparse
    my $self = shift;
 
    $self->{loops} = {};
-   my $re = $self->{patterns}->{loop};
+   my $re1 = $self->{patterns}->{loopstart};
+   my $re2 = $self->{patterns}->{loopend};
    my ($start,$end) = split /\$1/, $self->{patterns}->{loop_out}, 2;
-   while ($self->{string} =~ s/$re/$start$1$end/)
-   {
-      $self->{loops}->{$1} = $2;
+   my @parts = split /$re1/, $self->{string};
+   while (@parts > 2) {
+      my $tail = pop @parts;
+      my $name = pop @parts;
+      if ($tail =~ s/^(.*?)$re2/$start$name$end/s)
+      {
+         $self->{loops}->{$name} = $1;
+      }
+      else
+      {
+         warn "Found loop start for '$name' but no loop end";         
+      }
+      $parts[$#parts] .= $tail;
    }
+   $self->{string} = $parts[0];
    return $self;
 }
 
@@ -487,7 +531,8 @@ sub _fetchfile
          my $dir = $filename;
          $dir =~ s,/[^/]+$,,;  # remove filename
          $dir .= "/" if ($dir =~ /[^\/]$/);
-         $content =~ s|<!\-\-\s*\#include\s+template=\"([^\"]+)\"\s*\-\->|  $self->_fetchfile("$dir$1")  |ge;
+         my $re = $self->{patterns}->{include};
+         $content =~ s/$re/ $self->_fetchfile("$dir$1") /ge;
       }
 
       if ($self->{use_cache})
