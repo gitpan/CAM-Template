@@ -16,9 +16,13 @@ module are:
 
 It's main disadvantages under HTML::Template are:
 
- * it's caching and preparsing is much less sophisticated
- * the default template syntax is quickier
+ * it's caching and preparsing are less sophisticated
+ * the default template syntax is quirkier
  * it's not as feature rich in syntax and configuration options
+
+If you are starting from scratch, you may prefer HTML::Template.  But,
+if you already have a bunch of templates using a syntax that is not
+compatible with HTML::Template, this can help.
 
 Install via the usual:
   perl Makefile.PL

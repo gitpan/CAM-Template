@@ -1,6 +1,3 @@
-# Before `make install' is performed this script should be runnable with
-# `make test'. After `make install' it should work as `perl test.pl'
-
 BEGIN
 { 
    use Test::More tests => 6;
@@ -8,6 +5,10 @@ BEGIN
 }
 
 use strict;
+use Carp;
+$SIG{__WARN__} = \&Carp::cluck;
+$SIG{__DIE__} = \&Carp::confess;
+
 no strict qw(refs); # needed for isDiff function, below
 
 ## FIRST create some before and after strings
@@ -78,7 +79,8 @@ $t->addLoop("loop", [
                      ]);
 
 # Escape the ":"s just so this string does not look like a var to replace
-is($t->{loops}->{loop}, "\n\:\:n\:\:. It supports loops", 'loop check');
+is($t->{content}->{loops}->{loop}, "\n\:\:n\:\:. It supports loops",
+   'loop check');
 
 SKIP: {
    eval { require FileHandle };
@@ -111,16 +113,77 @@ $out = $t->toString();
 isDiff($out, $selfcompare, "replace file with toString w/o filecache");
 
 # Performance testing
-
-my $start = getTime();
 my $niter = 500;
+my $start;
+my $stop;
+
+print "## Tests of load and replace\n";
+
+$start = getTime();
 for (my $i=0; $i<$niter; $i++)
 {
+   my $t = CAM::Template->new();
+   $t->setFileCache(1);
    $t->setFilename($0);
    $out = $t->toString();
 }
-my $stop = getTime();
-print "# Performance test: ".($stop-$start)." seconds for $niter iterations\n";
+$stop = getTime();
+print "# Performance test: ".sprintf("%.2f",$stop-$start)." seconds for $niter iterations with filecache\n";
+
+$t->setFileCache(0);
+$start = getTime();
+for (my $i=0; $i<$niter; $i++)
+{
+   my $t = CAM::Template->new();
+   $t->setFileCache(0);
+   $t->setFilename($0);
+   $out = $t->toString();
+}
+$stop = getTime();
+print "# Performance test: ".sprintf("%.2f",$stop-$start)." seconds for $niter iterations without filecache\n";
+
+print "## Tests of just replace\n";
+print "## 'hard' means a template with lots of syntax to search and replace\n";
+print "## 'easy' means a template of just content, nothing to replace\n";
+
+$t->setFilename($0);
+$t->study();
+$start = getTime();
+for (my $i=0; $i<$niter; $i++)
+{
+   $out = $t->toString();
+}
+$stop = getTime();
+print "# Performance test: ".sprintf("%.2f",$stop-$start)." seconds for $niter hard iterations with study\n";
+
+$t->setFilename($0);
+$start = getTime();
+for (my $i=0; $i<$niter; $i++)
+{
+   $out = $t->toString();
+}
+$stop = getTime();
+print "# Performance test: ".sprintf("%.2f",$stop-$start)." seconds for $niter hard iterations without study\n";
+
+my $simple = " " x length($t->{content}->{string});
+$t->setString($simple);
+$t->study();
+$start = getTime();
+for (my $i=0; $i<$niter; $i++)
+{
+   $out = $t->toString();
+}
+$stop = getTime();
+print "# Performance test: ".sprintf("%.2f",$stop-$start)." seconds for $niter easy iterations with study\n";
+
+$t->setString($simple);
+$start = getTime();
+for (my $i=0; $i<$niter; $i++)
+{
+   $out = $t->toString();
+}
+$stop = getTime();
+print "# Performance test: ".sprintf("%.2f",$stop-$start)." seconds for $niter easy iterations without study\n";
 
 # TODO:
 # test resetting the params hash

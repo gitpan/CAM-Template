@@ -23,45 +23,29 @@ CAM::Template - Clotho-style search/replace HTML templates
 
 This package is intended to replace Clotho's traditional ::PARAM::
 syntax with an object-oriented API.  This syntax is overrideable by
-subclasses.
+subclasses.  See the last section of this documentation for an
+explanation of the default syntax.
 
 =cut
+
+#==============================
 
 require 5.005_62;
 use strict;
 use warnings;
 use Carp;
-
-require Exporter;
+use Exporter;
 
 our @ISA = qw(Exporter);
-
-# Items to export into callers namespace by default. Note: do not export
-# names by default without a very good reason. Use EXPORT_OK instead.
-# Do not simply export all your public functions/methods/constants.
-
-# This allows declaration	use CAM::Template ':all';
-# If you do not need this, moving things directly into @EXPORT or @EXPORT_OK
-# will save memory.
-our %EXPORT_TAGS = ( 'all' => [ qw(
-	
-) ] );
-
-our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
-
-our @EXPORT = qw(
-	
-);
-our $VERSION = '0.76';
+our $VERSION = '0.79';
 
 ## Global package settings
 
-my $global_include_files = 1;
+our $global_include_files = 1;
 
-# Flags for the in-memory cache
-my $global_use_cache = 1;
-my %cache = ();
-my %cache_times = ();
+# Flags for the in-memory file cache
+our $global_use_cache = 1;
+our %global_filecache = ();
 
 #==============================
 
@@ -79,6 +63,18 @@ This class method returns a series of regular expressions used for
 template searching and replacing.  Modules which subclass
 CAM::Template can override this method to implement a different
 template syntax.
+
+Example of the recommended way to write an override function for this
+method in a subclass:
+
+  sub patterns {
+    my $pkg = shift;
+    return {
+      $pkg->SUPER::patterns(),
+      # include syntax:  <? include("subfile.tmpl") ?>
+      include => qr/<? *include\(\"([^\"]+)\"\) *?>/,
+    };
+  }
 
 =cut
 
@@ -114,10 +110,6 @@ sub patterns
       include => qr/<!\-\-\s*\#include\s+template=\"([^\"]+)\"\s*\-\->/,
    };
 }
-
-#==============================
-
-
 #==============================
 
 =item new
@@ -131,19 +123,17 @@ the replacement dictionary right away, or do it later via methods.
 
 =cut
 
-#==============================
 sub new
 {
    my $pkg = shift;
 
    my $self = bless({
-      filename => "",
+      content => undef,
       params => {},
-      string => "",
-      loops => {},
       use_cache => $global_use_cache,
       include_files => $global_include_files,
       patterns => $pkg->patterns(),
+      isloop => 0,
    }, $pkg);
 
    if (@_ > 0 && !$self->setFilename(shift))
@@ -157,8 +147,6 @@ sub new
 
    return $self;
 }
-
-
 #==============================
 
 =item setFileCache 0|1
@@ -169,7 +157,7 @@ globally:
 
     my $tmpl = new CAM::Template();
     $tmpl->setFileCache(0);
-
+       or
     CAM::Template->setFileCache(0);
 
 The global value only affects future template objects, not existing
@@ -177,7 +165,6 @@ ones.
 
 =cut
 
-#==============================
 sub setFileCache
 {
    my $self = shift;
@@ -194,7 +181,6 @@ sub setFileCache
       return 1;
    }
 }
-
 #==============================
 
 =item setIncludeFiles 0|1
@@ -209,7 +195,7 @@ an object or globally:
 
     my $tmpl = new CAM::Template();
     $tmpl->setIncludeFiles(0);
-
+       or
     CAM::Template->setIncludeFiles(0);
 
 The global value only affects future template objects, not existing
@@ -217,7 +203,6 @@ ones.
 
 =cut
 
-#==============================
 sub setIncludeFiles
 {
    my $self = shift;
@@ -234,7 +219,6 @@ sub setIncludeFiles
       return 1;
    }
 }
-
 #==============================
 
 =item setFilename FILENAME
@@ -244,7 +228,6 @@ not exist or the object if it does.  This loads and preparses the file.
 
 =cut
 
-#==============================
 sub setFilename
 {
    my $self = shift;
@@ -256,12 +239,10 @@ sub setFilename
       &carp("File '$filename' cannot be read");
       return undef;
    }
-   $self->{filename} = $filename;
-   $self->{string} = $self->_fetchfile($filename);
+   $self->{content} = $self->_fetchfile($filename);
    $self->_preparse();
    return $self;
 }
-
 #==============================
 
 =item setString STRING
@@ -271,16 +252,17 @@ you already have the contents in memory.  This preparses the string.
 
 =cut
 
-#==============================
 sub setString
 {
    my $self = shift;
-   $self->{string} = shift;
-   $self->{filename} = "";
+   $self->{content} = {
+      string => shift,
+      studied => 0,
+      skip => {},
+   };
    $self->_preparse();
    return $self;
 }
-
 #==============================
 
 =item addLoop LOOPNAME, HASHREF | KEY => VALUE, ...
@@ -303,14 +285,14 @@ rows to be added.
 
 =cut
 
-#==============================
 sub addLoop
 {
    my $self = shift;
    my $loopname = shift;
    # additional params are collected below
 
-   return undef if (!exists $self->{loops}->{$loopname});
+   return undef if (!$self->{content});
+   return undef if (!defined $self->{content}->{loops}->{$loopname});
 
    while (@_ > 0 && $_[0] && ref($_[0]) && ref($_[0]) eq "ARRAY")
    {
@@ -329,15 +311,23 @@ sub addLoop
       }
    }
 
-   my $pkg = ref($self);
-   my $looptemplate = $pkg->new();
-   $looptemplate->setString($self->{loops}->{$loopname});
-   $looptemplate->setParams(%{$self->{params}}, $loopname => "", @_);
-   $self->{params}->{$loopname} = "" if (!exists $self->{params}->{$loopname});
+   my $looptemplate = $self->{content}->{loop_cache}->{$loopname};
+   if (!$looptemplate)
+   {
+      my $pkg = ref($self);
+      $self->{content}->{loop_cache}->{$loopname} =
+          $looptemplate = $pkg->new();
+      $looptemplate->{content} = {
+         skip => {%{$self->{content}->{skip}}},
+         string => $self->{content}->{loops}->{$loopname},
+         staticparams => $self->{content}->{staticparams},
+      };
+      $looptemplate->study() if ($self->{content}->{studied});
+   }
+   $looptemplate->setParams(\%{$self->{params}}, $loopname => "", @_);
    $self->{params}->{$loopname} .= $looptemplate->toString();
    return $self;
 }
-
 #==============================
 
 =item clearLoop LOOPNAME
@@ -357,7 +347,6 @@ for nested loops.  For example:
 
 =cut
 
-#==============================
 sub clearLoop
 {
    my $self = shift;
@@ -375,7 +364,6 @@ useful for the first element of a nested loop.
 
 =cut
 
-#==============================
 sub setLoop
 {
    my $self = shift;
@@ -383,6 +371,55 @@ sub setLoop
 
    $self->clearLoop($loopname);
    return $self->addLoop($loopname, @_);
+}
+#==============================
+
+=item study
+
+Takes a moment to analyze the template to see if any time can be
+gained by skipping unused portions of the replacement syntax.  This is
+obviously more useful for templates that are replaced often, like
+loops.
+
+Implementation note as of v0.77: In practice this rarely helps except
+on large, simplistic templates.  Hopefully this will improve in the
+future.
+
+=cut
+
+sub study
+{
+   my $self = shift;
+ 
+   return undef if (!$self->{content});
+   return undef if (!defined $self->{content}->{string});
+   #study $self->{content}->{string};
+   my $re_hash = $self->{patterns};
+   my $content = $self->{content};
+   foreach my $key ("if", "unless")
+   {
+      next if ($content->{skip}->{$key}); # for loops
+      if ($content->{string} !~ /$$re_hash{$key}/)
+      {
+         $content->{skip}->{$key} = 1;
+      }
+   }
+
+   my $i = 0;
+   foreach my $re (@{$re_hash->{vars}})
+   {
+      my $key = "vars".++$i;
+      next if ($content->{skip}->{$key}); # for loops
+      if ($content->{string} !~ /$re/)
+      {
+         $content->{skip}->{$key} = 1;
+      }
+   }
+
+   $content->{skip}->{cond} = 1 if ($content->{skip}->{if} &&
+                                    $content->{skip}->{unless});
+   $content->{studied} = 1;
+   return $self;
 }
 #==============================
 
@@ -394,7 +431,7 @@ mix the two as of v0.71 of this library).  For example:
 
     my %hash = (name => "chris", age => 30);
     $tmpl1->addParams(%hash);
-
+    
     my $hashref = \%hash;
     $tmpl2->addParams($hashref);
 
@@ -406,7 +443,6 @@ the setParams method instead.
 
 =cut
 
-#==============================
 sub addParams
 {
    my $self = shift;
@@ -453,7 +489,6 @@ sub addParams
    }
    return $self;
 }
-
 #==============================
 
 =item setParams HASHREF | KEY => VALUE, ...
@@ -462,7 +497,6 @@ Exactly like addParams above, except it clears the parameter list first.
 
 =cut
 
-#==============================
 sub setParams
 {
    my $self = shift;
@@ -470,25 +504,37 @@ sub setParams
    $self->{params} = {};
    return $self->addParams(@_);
 }
-
-
 #==============================
+
 # PRIVATE FUNCTION
 sub _preparse
 {
    my $self = shift;
 
-   $self->{loops} = {};
+   my $content = $self->{content};
+   return $self if ($content->{parsed});
+
+   $content->{skip} = {};
+   $content->{studied} = 0;
+   $content->{loops} = {};
+   $content->{loop_cache} = {};
+   $content->{staticparams} = {};
+
+   # Retrieve constant parameters set in the template files
+   my $static_re = $self->{patterns}->{staticvars};
+   $content->{string} =~ s/$static_re/$$content{staticparams}{$1}=$2; ""/ge;
+
+   # Break up all loops
    my $re1 = $self->{patterns}->{loopstart};
    my $re2 = $self->{patterns}->{loopend};
    my ($start,$end) = split /\$1/, $self->{patterns}->{loop_out}, 2;
-   my @parts = split /$re1/, $self->{string};
+   my @parts = split /$re1/, $content->{string};
    while (@parts > 2) {
       my $tail = pop @parts;
       my $name = pop @parts;
       if ($tail =~ s/^(.*?)$re2/$start$name$end/s)
       {
-         $self->{loops}->{$name} = $1;
+         $content->{loops}->{$name} = $1;
       }
       else
       {
@@ -496,25 +542,38 @@ sub _preparse
       }
       $parts[$#parts] .= $tail;
    }
-   $self->{string} = $parts[0];
+   $content->{string} = $parts[0];
+   $content->{parsed} = 1;
+
    return $self;
 }
-
-
 #==============================
+
 # PRIVATE FUNCTION
 sub _fetchfile
 {
    my $self = shift;
    my $filename = shift;
 
-   if ($self->{use_cache} && exists $cache{$filename} &&
-       $cache_times{$filename} >= (stat($filename))[9])
+   my $cache;
+   if ($self->{use_cache})
    {
-      return $cache{$filename};
+      my $pkg = ref($self);
+      $global_filecache{$pkg} ||= {};
+      $cache = $global_filecache{$pkg};
+   }
+   
+   if ($self->{use_cache} && exists $cache->{$filename} &&
+       $cache->{$filename}->{time} >= (stat($filename))[9])
+   {
+      return $cache->{$filename};
    }
    else
    {
+      my $struct = {
+         studied => 0,
+         skip => {},
+      };
       local *FILE;
       if (!open(FILE, $filename))
       {
@@ -522,7 +581,7 @@ sub _fetchfile
          return undef;
       }
       local $/ = undef;
-      my $content = <FILE>;
+      $struct->{string} = <FILE>;
       close(FILE);
 
       if ($self->{include_files})
@@ -532,15 +591,15 @@ sub _fetchfile
          $dir =~ s,/[^/]+$,,;  # remove filename
          $dir .= "/" if ($dir =~ /[^\/]$/);
          my $re = $self->{patterns}->{include};
-         $content =~ s/$re/ $self->_fetchfile("$dir$1") /ge;
+         $struct->{string} =~ s/$re/ $self->_fetchfile("$dir$1")->{string} /ge;
       }
 
       if ($self->{use_cache})
       {
-         $cache{$filename} = $content;
-         $cache_times{$filename} = (stat($filename))[9];
+         $struct->{time} = (stat($filename))[9];
+         $cache->{$filename} = $struct;
       }
-      return $content;
+      return $struct;
    }
 }
 
@@ -552,42 +611,44 @@ Executes the search/replace and returns the content.
 
 =cut
 
-#==============================
 sub toString
 {
    my $self = shift;
 
-   my $content = $self->{string};
+   return "" unless ($self->{content});
+   my $content = $self->{content}->{string};
+   return "" unless (defined $content);
 
    my $re_hash = $self->{patterns};
+   my $skip = $self->{content}->{skip};
    {
-      my %params = ();
-
       # Turn off warnings, since it is likely that some parameters
       # will be undefined
       no warnings;
 
-      # Retrieve parameters set in the template files
-      $content =~ s/$$re_hash{staticvars}/$params{$1}=$2; ""/ge;
-
       # incoming params can override template params
-      %params = (%params, %{$self->{params}});
+      my %params = (%{$self->{content}->{staticparams}}, %{$self->{params}});
 
-      # Do the following multiple times to handle nested conditionals
-      my $pos = 1;
-      my $neg = 1;
-      do {
-         if ($neg)
-         {
-            $neg = ($content =~ s/$$re_hash{unless}/(!$params{$1}) ? $2 : ''/ge);
-         }
-         if ($pos)
-         {
-            $pos = ($content =~ s/$$re_hash{if}/$params{$1} ? $2 : ''/ge);
-         }
-      } while ($neg || $pos);
+      unless ($skip->{cond})
+      {
+         # Do the following multiple times to handle nested conditionals
+         my $pos = 1;
+         my $neg = 1;
+         do {
+            if ($neg)
+            {
+               $neg = ($content =~ s/$$re_hash{unless}/(!$params{$1}) ? $2 : ''/ge);
+            }
+            if ($pos)
+            {
+               $pos = ($content =~ s/$$re_hash{if}/$params{$1} ? $2 : ''/ge);
+            }
+         } while ($neg || $pos);
+      }
+      my $i = 0;
       foreach my $re (@{$re_hash->{vars}})
       {
+         next if ($skip->{"vars".++$i});
          $content =~ s/$re/$params{$1}/g;
       }
    }
@@ -606,7 +667,6 @@ STDOUT) or the supplied filehandle.
 
 =cut
 
-#==============================
 sub print
 {
    my $self = shift;
@@ -625,16 +685,224 @@ sub print
    }
    return $self;
 }
-
-
+#==============================
 
 1;
 __END__
 
 =back
 
+=head1 TEMPLATE SYNTAX
+
+The template syntax has four primary purposes: 1) to merge template
+files (i.e. include standard headers, footers, etc., 2) to mark blanks
+in the template that need to be filled with strings from the program,
+3) to indicate optional sections of the template which are shown or
+not shown, 4) to produce similar, repeated sections (like table rows),
+and
+
+
+=head2 Subtemplates
+
+To include another file in your template, use this notation:
+
+  <!-- include template="file.tmpl" -->
+
+This causes "file.tmpl" to be slurped into the template before any
+further processing occurs.  Subtemplates are allowed to slurp in their
+own subtemplates too, but make sure that a file does not attempt to
+include itself!  A subtemplate can even be included in multiple
+places.  For example:
+
+  <html>
+  <body>
+  <!-- Top nav -->
+  <!-- include template="nav.tmpl" -->
+  
+  ...  blah blah ...
+  
+  <!-- Bottom nav -->
+  <!-- include template="nav.tmpl" -->
+  </body>
+  </html>
+
+=head2 String Replacement
+
+To search and replace strings, use one of these three tag descriptions:
+
+   ::var::
+   <!-- ::var:: -->
+   ;;var;;
+
+The first is the normal syntax.  The second alternative is nice if you
+want to view the raw template, so the "::" part doesn't show in your
+browser.  The last was a workaround for Mac Dreamweaver which mangled
+":" characters sometimes, but is now rarely used.
+
+For example, if your template looks like this:
+
+  Hello, <!--::fname::--> ::lname::!  Today is ;;day;;.
+
+then your output will be:
+
+  Hello, Chris Dolan!  Today is Friday.
+
+if your code has this command:
+
+  $template->setParams(fname => "Chris", lname => "Dolan", day => "Friday");
+
+Another form of string replacement is one that is set in the template
+itself.  The syntax for this is:
+
+  ::var==some arbitrary string of text::
+
+This is useful particularly for included subtemplates, or for phrases
+that are repeated often.  In the following example, the table cell
+color is hard-coded at the top of the template where it can be easily
+changed:
+
+  ::oddcolor==#AAAAAA:: ::evencolor==#FFFFFF::
+  <html><body>
+  <table>
+  <tr><td bgcolor="::oddcolor::">one</td></tr>
+  <tr><td bgcolor="::evencolor::">two</td></tr>
+  <tr><td bgcolor="::oddcolor::">three</td></tr>
+  <tr><td bgcolor="::evencolor::">four</td></tr>
+  </table>
+  </body></html>
+
+The value portion of this tag can be any string on one line, as long
+as it is less than 80 characters and does not contain "::".  These
+hard-coded parameters can be overridden by parameters of the same name
+set with addParams().  However setParams() does NOT clear the
+hard-coded parameters, unlike the parameters set in the Perl code.
+
+=head2 Conditional Blocks
+
+Conditional sections of a template are either shown or not shown
+depending on the state of a boolean parameter.  A parameter is true or
+false just as Perl variables are true or false: undef, "" and 0 are
+false; everything else is true.  Conditional blocks are marked by the
+following codes:
+
+   ??var?? Some text to display... ??var??
+   ??!var?? Some text to display... ??!var??
+
+The first type is shown if "var" is true and not shown if "var" is
+false.  The second type is the opposite: show if false, not shown if
+true.  Think of them as "if" and "unless" blocks, respectively.
+
+These blocks are highly flexible.  They can span mutliple lines and
+can be nested within each other.
+
+For example, this template:
+
+  Hello ??male??Mr.??male????!male??Ms.??!male?? ::lname::!
+
+produces these:
+
+  Hello Mr. Dolan!
+  Hello Ms. Smith!
+
+for these parameters, respectively:
+
+  $template->setParams(male => 1, lname => "Dolan");
+  $template->setParams(lname => "Smith");
+
+=head2 Repetition
+
+Often in templates you wish to print a list of data.  In this case,
+you indicate one instance of this in a <CAM_loop> tag and use the
+addLoop() method to replicate it.  The syntax is:
+
+  <CAM_loop name="var"> ... </CAM_loop>
+
+Note that "CAM_loop" is case insensitive, so you can write it as
+<cam_loop> if you like.  For more detail see the documentation for the
+addLoop() method above.
+
+=head2 Example
+
+Here is an example template using most of the above syntax:
+
+  ::title==Example Template::
+  <html>
+  <head> <title>::title::</title> </head>
+  <body>
+    <h1>::title::</h1>
+    <!-- include template="nav.tmpl" -->
+    
+    ??name?? <b> Welcome, ::name::! ??name??
+    ??!name?? Nice to meet you. ??!name??
+    
+    ??data??
+      <table>
+      <tr><th>Height</th><th>Weight</th></tr>
+      <CAM_loop name="data">
+        <tr>
+          ??height??  <td>::height::</td>  ??height??
+          ??!height?? <td>(no height)</td> ??!height??
+          ??weight??  <td>::weight::</td>  ??weight??
+          ??!weight?? <td>(no weight)</td> ??!weight??
+        </tr>
+      </CAM_loop>
+      </table>
+    ??data??
+    ??!data??
+      Sorry, there is no data to show right now.
+    ??!data??
+  </body>
+  </html>
+
+and here is a filled in example of that template, exactly as it woulr
+appear for the following code.
+
+  $tmpl->setParams(name => "Chris");
+  $tmpl->addLoop(height => "72", weight => 200);
+  $tmpl->addLoop(height => "69", weight => undef);
+  $tmpl->addLoop(height => "", weight => 150);
+  $tmpl->print();
+
+  <html>
+  <head> <title>Example Template</title> </head>
+  <body>
+    <h1>Example Template</h1>
+    <a href="../index.html">Back to home</a>
+    
+    <b> Welcome, Chris! 
+    
+    
+    
+      <table>
+      <tr><th>Height</th><th>Weight</th></tr>
+      
+        <tr>
+            <td>72</td>  
+          
+            <td>200</td>  
+          
+        </tr>
+      
+        <tr>
+            <td>69</td>  
+          
+            <td>(no weight)</td>  
+          
+        </tr>
+      
+        <tr>
+            <td>(no height)</td>  
+          
+            <td>150</td>  
+          
+        </tr>
+      
+      </table>
+    
+    
+  </body>
+  </html>
+
 =head1 AUTHOR
 
 Chris Dolan, Clotho Advanced Media, I<chris@clotho.com>
-
-=cut

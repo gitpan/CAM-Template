@@ -1,3 +1,33 @@
+2003-03-12 16:55  chris
+
+	* README, Template.pm: Documentation galore
+
+2003-03-12 11:56  chris
+
+	* Template.pm: * Change file caching so a separate cache is created
+	for each   CAM::Template subclass.  * Remove unused filename from
+	the content hash * Loops no longer call setString
+
+2003-03-12 11:45  chris
+
+	* Template.pm, test.pl: v0.79 File cache now caches preparsed
+	template instead of raw file
+
+2003-03-12 09:04  chris
+
+	* Template.pm, test.pl: v0.78 Speedups and attempted speedups,
+	including the study() method Some comment cleanup Change file
+	globals to package globals
+
+2003-03-09 10:15  chris
+
+	* Template.pm: Minor doc update
+
+2003-03-06 16:57  chris
+
+	* Template.pm: v0.77 Minor changes: remove unused globals, fix
+	documentation
+
 2002-11-10 20:52  chris
 
 	* Template.pm: Fix nested loop behavior
