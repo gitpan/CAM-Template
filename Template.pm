@@ -52,7 +52,7 @@ our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
 our @EXPORT = qw(
 	
 );
-our $VERSION = '0.73';
+our $VERSION = '0.74';
 
 ## Global package settings
 
@@ -89,6 +89,11 @@ sub patterns
    return {
       # $1 is the loop name, $2 is the loop body
       loop => qr/<cam_loop\s+name\s*=\s*\"?([\w\-]+)\"?>(.*?)<\/cam_loop>/is,
+
+      # a string that looks like one of the "vars" below for
+      # substituting the loop variable.  This will be used in:
+      #    $template =~ s/loop-pattern/loop_out-pattern/;
+      loop_out => '::$1::',
 
       # $1 is the variable name, $2 is the conditional body
       if => qr/\?\?([\w\-]+?)\?\?(.*?)\?\?\1\?\?/s,
@@ -134,6 +139,7 @@ sub new
       loops => {},
       use_cache => $global_use_cache,
       include_files => $global_include_files,
+      patterns => $pkg->patterns(),
    }, $pkg);
 
    if (@_ > 0 && !$self->setFilename(shift))
@@ -441,8 +447,9 @@ sub _preparse
    my $self = shift;
 
    $self->{loops} = {};
-   my $re = $self->patterns()->{loop};
-   while ($self->{string} =~ s/$re/::$1::/)
+   my $re = $self->{patterns}->{loop};
+   my ($start,$end) = split /\$1/, $self->{patterns}->{loop_out}, 2;
+   while ($self->{string} =~ s/$re/$start$1$end/)
    {
       $self->{loops}->{$1} = $2;
    }
@@ -507,7 +514,7 @@ sub toString
 
    my $content = $self->{string};
 
-   my $re_hash = $self->patterns();
+   my $re_hash = $self->{patterns};
    {
       my %params = ();
 
