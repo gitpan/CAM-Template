@@ -14,6 +14,11 @@ no strict qw(refs); # needed for isDiff function, below
 ## FIRST create some before and after strings
 my $templatestring = ( <<"EOF"
 
+??!hardtest??
+??!test??test??!test??
+??!test??test??!test??
+??!hardtest??
+
 This is a test string. It sets constants::replace==replace::.  It has
 constant ::replace:: variables.  It has ::dynamic_replace::
 variables.  It supports a <!-- ::variety::--> of ;;replace-ment;;
@@ -30,6 +35,11 @@ EOF
                );
 
 my $comparestring = (<<"EOF"
+
+
+test
+test
+
 
 This is a test string. It sets constants.  It has
 constant replace variables.  It has dynamic replace

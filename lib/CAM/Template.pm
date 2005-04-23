@@ -4,6 +4,13 @@ package CAM::Template;
 
 CAM::Template - Clotho-style search/replace HTML templates
 
+=head1 LICENSE
+
+Copyright 2005 Clotho Advanced Media, Inc., <cpan@clotho.com>
+
+This library is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+
 =head1 SYNOPSIS
 
   use CAM::Template;
@@ -26,6 +33,18 @@ syntax with an object-oriented API.  This syntax is overrideable by
 subclasses.  See the last section of this documentation for an
 explanation of the default syntax.
 
+We recommend that you DO NOT use this module unless you have a good
+reason.  The other CPAN templating modules, like HTML::Template and
+Template::Toolkit) are better maintained than this one.  See 
+L<http://perl.apache.org/docs/tutorials/tmpl/comparison/comparison.html>
+for an excellent discussion of the various templating approaches.
+
+So why does this module exist?  Legacy, mostly.  A ton of HTML was
+written in this templating language.  So, we keep this module in good
+condition.  Additionally, we believe it's unique in the Perl community
+in that it has a reconfigurable template syntax.  That's worth a
+little, we think.
+
 =cut
 
 #==============================
@@ -34,10 +53,9 @@ require 5.005_62;
 use strict;
 use warnings;
 use Carp;
-use Exporter;
 
-our @ISA = qw(Exporter);
-our $VERSION = '0.79';
+our @ISA = qw();
+our $VERSION = '0.91';
 
 ## Global package settings
 
@@ -92,9 +110,16 @@ sub patterns
       #    $template =~ s/loop-pattern/loop_out-pattern/;
       loop_out => '::$1::',
 
+      # DEPRECATED
       # $1 is the variable name, $2 is the conditional body
-      if => qr/\?\?([\w\-]+?)\?\?(.*?)\?\?\1\?\?/s,
-      unless => qr/\?\?!([\w\-]+?)\?\?(.*?)\?\?!\1\?\?/s,
+      #if => qr/\?\?([\w\-]+?)\?\?(.*?)\?\?\1\?\?/s,
+      #unless => qr/\?\?!([\w\-]+?)\?\?(.*?)\?\?!\1\?\?/s,
+
+      # $1 is a boolean flag, $2 is the variable name,
+      # $3 is the conditional body
+      ifunless => qr/\?\?(!?)([\w\-]+?)\?\?(.*?)\?\?\1\2\?\?/s,
+      ifunless_test => qr/^!$/s,
+
 
       # $1 is the variable name
       vars => [
@@ -265,6 +290,29 @@ sub setString
 }
 #==============================
 
+=item loopClass
+
+Template loops (i.e. C<addLoop>) usually instantiate new template
+objects to populate the loop body.  In general, we want the new
+instance to be the same class as the main template object.  However,
+in some subclasses of CAM::Template, this is a bad thing (for example
+PDF templates with loops in their individual pages).
+
+In the latter case, the subclass should override this method with
+something like the following:
+
+   sub loopClass { "CAM::Template" }
+
+=cut
+
+sub loopClass
+{
+   my $pkg_or_self = shift;
+
+   return ref($pkg_or_self) || $pkg_or_self;
+}
+#==============================
+
 =item addLoop LOOPNAME, HASHREF | KEY => VALUE, ...
 
 =item addLoop LOOPNAME, ARRAYREF
@@ -314,9 +362,8 @@ sub addLoop
    my $looptemplate = $self->{content}->{loop_cache}->{$loopname};
    if (!$looptemplate)
    {
-      my $pkg = ref($self);
       $self->{content}->{loop_cache}->{$loopname} =
-          $looptemplate = $pkg->new();
+          $looptemplate = $self->loopClass()->new();
       $looptemplate->{content} = {
          skip => {%{$self->{content}->{skip}}},
          string => $self->{content}->{loops}->{$loopname},
@@ -396,8 +443,9 @@ sub study
    #study $self->{content}->{string};
    my $re_hash = $self->{patterns};
    my $content = $self->{content};
-   foreach my $key ("if", "unless")
+   foreach my $key ("if", "unless", "ifunless")
    {
+      next if (!$re_hash->{$key});
       next if ($content->{skip}->{$key}); # for loops
       if ($content->{string} !~ /$$re_hash{$key}/)
       {
@@ -416,8 +464,9 @@ sub study
       }
    }
 
-   $content->{skip}->{cond} = 1 if ($content->{skip}->{if} &&
-                                    $content->{skip}->{unless});
+   $content->{skip}->{cond} = 1 if (($content->{skip}->{if} &&
+                                     $content->{skip}->{unless}) ||
+                                    $content->{skip}->{ifunless});
    $content->{studied} = 1;
    return $self;
 }
@@ -632,19 +681,36 @@ sub toString
       unless ($skip->{cond})
       {
          # Do the following multiple times to handle nested conditionals
-         my $pos = 1;
-         my $neg = 1;
-         do {
-            if ($neg)
-            {
-               $neg = ($content =~ s/$$re_hash{unless}/(!$params{$1}) ? $2 : ''/ge);
-            }
-            if ($pos)
-            {
-               $pos = ($content =~ s/$$re_hash{if}/$params{$1} ? $2 : ''/ge);
-            }
-         } while ($neg || $pos);
+
+         if ($re_hash->{if} && $re_hash->{unless}) # legacy subclassing
+         {
+
+            &carp("DEPRECATED: please use 'ifunless' instead of 'if' and 'unless'\n" .
+                  "in your patterns.  There was a subtle bug in the old way, and\n" .
+                  "the new way is too slow with 'if' and 'unless'\n");
+
+            my $pos = 1;
+            my $neg = 1;
+            do {
+               if ($neg)
+               {
+                  $neg = ($content =~ s/$$re_hash{unless}/(!$params{$1}) ? $2 : ''/ge);
+               }
+               if ($pos)
+               {
+                  $pos = ($content =~ s/$$re_hash{if}/$params{$1} ? $2 : ''/ge);
+               }
+            } while ($neg || $pos);
+         }
+         else
+         {
+            do {} while ($content =~ s/$$re_hash{ifunless}/
+                                       my($bool,$var,$body)=($1,$2,$3);
+                                       ($bool =~ m,$$re_hash{ifunless_test}, ? !$params{$var} : $params{$var}) ? $body : ''
+                                      /gse);
+         }
       }
+
       my $i = 0;
       foreach my $re (@{$re_hash->{vars}})
       {
@@ -854,7 +920,7 @@ Here is an example template using most of the above syntax:
   </body>
   </html>
 
-and here is a filled in example of that template, exactly as it woulr
+and here is a filled in example of that template, exactly as it would
 appear for the following code.
 
   $tmpl->setParams(name => "Chris");
@@ -905,4 +971,6 @@ appear for the following code.
 
 =head1 AUTHOR
 
-Chris Dolan, Clotho Advanced Media, I<chris@clotho.com>
+Clotho Advanced Media, Inc. I<cpan@clotho.com>
+
+Primary developer: Chris Dolan

@@ -1,7 +1,10 @@
-COPYRIGHT
-README
+index.html
+lib/CAM/Template.pm
+Build.PL
 ChangeLog
+LICENSE
 MANIFEST
 Makefile.PL
-Template.pm
+README
 test.pl
+META.yml

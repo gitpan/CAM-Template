@@ -1,8 +1,11 @@
 use ExtUtils::MakeMaker;
-# See lib/ExtUtils/MakeMaker.pm for details of how to influence
-# the contents of the Makefile that is written.
 WriteMakefile(
-    'NAME'		=> 'CAM::Template',
-    'VERSION_FROM'	=> 'Template.pm', # finds $VERSION
-    'PREREQ_PM'		=> {}, # e.g., Module::Name => 1.1
+              'NAME'		=> 'CAM::Template',
+              'VERSION_FROM'	=> 'lib/CAM/Template.pm',
+              'PREREQ_PM'	=> {
+              },
+              'PL_FILES'        => {},
+              ($] >= 5.005 ?
+               (ABSTRACT_FROM => 'lib/CAM/Template.pm',
+                AUTHOR     => 'Clotho Advanced Media <cpan@clotho.com>') : ()),
 );
