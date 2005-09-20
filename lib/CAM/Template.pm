@@ -55,7 +55,7 @@ use warnings;
 use Carp;
 
 our @ISA = qw();
-our $VERSION = '0.91';
+our $VERSION = '0.93';
 
 ## Global package settings
 
@@ -265,6 +265,7 @@ sub setFilename
       return undef;
    }
    $self->{content} = $self->_fetchfile($filename);
+   $self->{filename} = $filename;
    $self->_preparse();
    return $self;
 }
@@ -285,6 +286,7 @@ sub setString
       studied => 0,
       skip => {},
    };
+   delete $self->{filename};
    $self->_preparse();
    return $self;
 }
@@ -512,7 +514,7 @@ sub addParams
       elsif (ref($_[0]))
       {
          my $ref = shift;
-         if (ref($ref) ne "HASH")
+         if (ref($ref) =~ /^(?:SCALAR|ARRAY|CODE)$/)
          {
             &carp("Parameter list has a reference that is not a hash reference");
             return undef;
@@ -676,7 +678,11 @@ sub toString
       no warnings;
 
       # incoming params can override template params
-      my %params = (%{$self->{content}->{staticparams}}, %{$self->{params}});
+      my %params = (
+         "__filename__" => $self->{filename},
+         %{$self->{content}->{staticparams}},
+         %{$self->{params}},
+      );
 
       unless ($skip->{cond})
       {

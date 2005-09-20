@@ -1,10 +1,12 @@
 index.html
-lib/CAM/Template.pm
 Build.PL
 ChangeLog
+lib/CAM/Template.pm
 LICENSE
-MANIFEST
 Makefile.PL
-README
-test.pl
+MANIFEST
 META.yml
+README
+t/pod-coverage.t
+t/pod.t
+t/template.t
